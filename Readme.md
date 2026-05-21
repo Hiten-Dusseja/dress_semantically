@@ -48,18 +48,20 @@ LANGCHAIN_API_KEY=your_langsmith_api_key_here  # Optional for tracing
 Scrape fashion items from websites (The Souled Store, Bewakoof):
 
 ```bash
-python main2.py
+python scraper.py
 ```
 
 This will create `scraper_output/fashion_data.json` with scraped items.
 
-### 5. Run the Cleaner (Optional)
+### 5. Run the Cleaner
 
 Clean and normalize the scraped data:
 
 ```bash
 python cleaner.py
 ```
+
+This processes the data and prepares it for embedding generation.
 
 ### 6. Generate Embeddings
 
@@ -165,18 +167,19 @@ Health check endpoint.
 
 ```
 .
-├── main2.py              # Web scraper
-├── cleaner.py            # Data cleaning script
-├── embedding.py          # Embedding generation
+├── scraper.py            # Web scraper for fashion items
+├── cleaner.py            # Data cleaning and normalization
+├── embedding.py          # Embedding generation pipeline
 ├── recommender.py        # Agentic recommendation engine
 ├── cache_check.py        # Semantic caching system
 ├── api.py                # FastAPI server
 ├── requirements.txt      # Python dependencies
 ├── .env                  # Environment variables
-├── scraper_output/       # Scraped data
+├── .gitignore            # Git ignore rules
+├── scraper_output/       # Scraped data directory
 │   └── fashion_data.json
-├── chroma_db/            # Vector database
-└── cache_db/             # Semantic cache
+├── chroma_db/            # Vector database (created after embedding.py)
+└── cache_db/             # Semantic cache (created after first API call)
 ```
 
 ## Technologies Used
@@ -243,7 +246,7 @@ instead of `DELETE /cache/clear`
 
 ### No Items Found
 
-- Check if embeddings were generated: `ls chroma_db/`
+- Check if embeddings were generated: `ls chroma_db/` (or `dir chroma_db` on Windows)
 - Verify scraped data exists: `ls scraper_output/fashion_data.json`
 - Try broader price range or different gender
 
@@ -252,6 +255,12 @@ instead of `DELETE /cache/clear`
 - Verify `GROQ_API_KEY` is set in `.env`
 - Check Groq API rate limits
 - Try reducing query complexity
+
+### Scraper Issues
+
+- Ensure Playwright is installed: `playwright install`
+- Check internet connection
+- Sites may have changed their structure - update selectors in `scraper.py`
 
 ## License
 
