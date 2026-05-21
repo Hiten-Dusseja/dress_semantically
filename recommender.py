@@ -1,6 +1,6 @@
 """
-Fashion RAG Recommender - Simple Query Pipeline
-Takes user queries and recommends fashion items using LLM + Vector Search
+Fashion RAG Recommender - ReAct Agent with Tool Calling
+Takes user queries and recommends fashion items using agentic LLM + Vector Search
 """
 
 import os
@@ -9,8 +9,9 @@ from dotenv import load_dotenv
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain.agents import create_agent
+from langchain.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 import json
 import re
 
@@ -62,51 +63,45 @@ def get_llm():
     return _llm
 
 
-# ─── Query Processing Chain ───────────────────────────────────────────────────
+# ─── Helper Functions ─────────────────────────────────────────────────────────
 
-QUERY_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are a fashion expert. Analyze the user's query and generate ONE specific search term for the best recommendation.
-
-**Case 1: User wants recommendations**
-Example: "I have a black shirt, what should I pair with it for a wedding?"
-→ Think about the BEST single item to recommend and output ONE search term like: "formal dress trousers black"
-
-**Case 2: User is directly searching**
-Example: "Show me black joggers"
-→ Just refine the query: "black joggers"
-
-Output ONLY ONE search term (not comma-separated, just one item), nothing else."""),
-    ("user", "{query}")
-])
+def extract_price_value(price_str):
+    """Extract numeric value from price string."""
+    if not price_str or price_str == 'N/A':
+        return 0
+    match = re.search(r'[\d,]+', str(price_str))
+    if match:
+        return int(match.group().replace(',', ''))
+    return 0
 
 
-def process_query(user_query: str, min_price: int = 0, max_price: int = 10000):
+# ─── Fashion Search Tool ──────────────────────────────────────────────────────
+
+@tool
+def search_fashion_items(search_term: str, min_price: int = 0, max_price: int = 10000, gender: str = "men") -> str:
     """
-    Process user query through LLM and search vector store with price filtering.
+    Search for fashion items in the database with price and gender filtering.
+    Automatically expands price range if no items found.
     
     Args:
-        user_query: User's fashion query
-        min_price: Minimum price filter (default: 0)
-        max_price: Maximum price filter (default: 10000)
-        
+        search_term: What to search for (e.g., "formal black pants", "casual joggers")
+        min_price: Minimum price in rupees (default: 0) integer field not string
+        max_price: Maximum price in rupees (default: 10000) integer field not string
+        gender: Gender filter - "men" or "women" (default: "men")
+        make sure you send min and max price as integers 
     Returns:
-        List of recommended items with details
+        JSON string with list of items found
     """
-    print(f"\n💬 User Query: {user_query}")
-    print(f"💰 Price Range: ₹{min_price:,} - ₹{max_price:,}")
+    print(f"\n🔍 Tool called: search_term='{search_term}', price_range=₹{min_price:,}-₹{max_price:,}, gender='{gender}'")
     
-    # Step 1: LLM generates ONE search term for best recommendation
-    llm = get_llm()
-    chain = QUERY_PROMPT | llm | StrOutputParser()
-    
-    print("\n🤖 LLM processing query...")
-    search_term = chain.invoke({"query": user_query})
-    print(f"🔍 Search term: {search_term}")
-    
-    # Step 2: Search vector store with price filtering
     vectorstore = get_vectorstore()
     
-    # Try to find items within price range
+    # Normalize gender input
+    gender = gender.lower().strip()
+    if gender not in ["men", "women"]:
+        gender = "men"  # Default to men if invalid
+    
+    # Try to find items within price range with retry logic
     attempts = 0
     max_attempts = 5
     current_min = min_price
@@ -114,25 +109,29 @@ def process_query(user_query: str, min_price: int = 0, max_price: int = 10000):
     results = []
     
     while attempts < max_attempts:
-        print(f"\n🔎 Searching with range: ₹{current_min:,} - ₹{current_max:,}")
+        print(f"  Attempt {attempts + 1}: Searching ₹{current_min:,} - ₹{current_max:,}, gender={gender}")
         
-        # Get more results to filter by price
-        all_results = vectorstore.similarity_search(search_term, k=20)
+        # Get more results to filter by price and gender
+        all_results = vectorstore.similarity_search(search_term, k=30)
         
-        # Filter by price range
+        # Filter by price range and gender
         filtered_results = []
         for doc in all_results:
             price_str = doc.metadata.get('price', '0')
             price_value = extract_price_value(price_str)
+            item_gender = doc.metadata.get('gender', '').lower().strip()
             
-            if current_min <= price_value <= current_max:
+            # Check both price and gender match
+            if current_min <= price_value <= current_max and item_gender == gender:
                 filtered_results.append(doc)
         
         if len(filtered_results) >= 5:
             results = filtered_results[:5]
+            print(f"  ✓ Found {len(results)} items")
             break
         elif len(filtered_results) > 0:
             results = filtered_results
+            print(f"  ✓ Found {len(results)} items (less than 5)")
             break
         
         # Expand range by 500 on both sides
@@ -142,233 +141,193 @@ def process_query(user_query: str, min_price: int = 0, max_price: int = 10000):
         print(f"  ⚠ Found {len(filtered_results)} items, expanding range...")
     
     if not results:
-        print("  ❌ No items found even after expanding range")
-        return []
+        return json.dumps({
+            "success": False,
+            "message": f"No {gender}'s items found even after expanding price range",
+            "items": []
+        })
     
-    print(f"  ✓ Found {len(results)} items in range ₹{current_min:,} - ₹{current_max:,}")
-    
-    # Step 3: Format results
+    # Format results
     items = []
-    print(f"\n📦 Items from database:")
-    for i, doc in enumerate(results, 1):
+    for doc in results:
         meta = doc.metadata
-        item = {
+        items.append({
             "name": meta.get('name', 'N/A'),
             "brand": meta.get('brand', 'N/A'),
             "category": meta.get('category', 'N/A'),
             "gender": meta.get('gender', 'N/A'),
             "price": meta.get('price', 'N/A'),
+            "price_value": extract_price_value(meta.get('price', '0')),
             "description": meta.get('description', 'N/A'),
             "product_url": meta.get('product_url', 'N/A'),
             "image_url": meta.get('image_url', 'N/A'),
-        }
-        items.append(item)
-        
-        # Print each item
-        print(f"\n  [{i}] {item['name']}")
-        print(f"      Brand: {item['brand']}")
-        print(f"      Category: {item['category']} | Gender: {item['gender']}")
-        print(f"      Price: {item['price']}")
-        print(f"      Description: {item['description']}")
+        })
     
-    return items
-
-
-# ─── Stylist Justification ────────────────────────────────────────────────────
-
-STYLIST_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are a luxury fashion stylist. Evaluate the recommended items and create a sophisticated justification.
-
-Analyze:
-- Color coordination and harmony
-- Style compatibility (formal/casual/occasion-appropriate)
-- Fashion rules and principles
-- Overall aesthetic cohesion
-
-Return a JSON object with:
-{{
-  "recommended_items": [
-    {{
-      "name": "item name",
-      "brand": "brand name",
-      "price": "price",
-      "why_this_works": "brief explanation"
-    }}
-  ],
-  "total_price": "calculated total",
-  "stylist_note": "A luxurious 2-3 sentence note explaining why these pieces work together as a cohesive outfit"
-}}
-
-Be elegant, concise, and authoritative."""),
-    ("user", """User Query: {query}
-
-Recommended Items:
-{items}
-
-Provide your expert styling justification.""")
-])
-
-
-def extract_price_value(price_str):
-    """Extract numeric value from price string."""
-    if not price_str or price_str == 'N/A':
-        return 0
-    # Extract numbers from string like "₹ 1499" or "1499"
-    match = re.search(r'[\d,]+', str(price_str))
-    if match:
-        return int(match.group().replace(',', ''))
-    return 0
-
-
-def justify_recommendations(user_query: str, items: list):
-    """
-    Get stylist justification for recommended items.
-    
-    Args:
-        user_query: Original user query
-        items: List of recommended items
-        
-    Returns:
-        JSON payload with justified recommendations
-    """
-    if not items:
-        return {
-            "recommended_items": [],
-            "total_price": "₹ 0",
-            "stylist_note": "No items found matching your criteria."
-        }
-    
-    print("\n✨ Generating stylist justification...")
-    
-    # Format items for LLM
-    items_text = "\n\n".join([
-        f"Item {i+1}:\n"
-        f"- Name: {item['name']}\n"
-        f"- Brand: {item['brand']}\n"
-        f"- Category: {item['category']}\n"
-        f"- Gender: {item['gender']}\n"
-        f"- Price: {item['price']}\n"
-        f"- Description: {item['description']}"
-        for i, item in enumerate(items)
-    ])
-    
-    # Get LLM justification
-    llm = get_llm()
-    chain = STYLIST_PROMPT | llm | StrOutputParser()
-    
-    response = chain.invoke({
-        "query": user_query,
-        "items": items_text
+    return json.dumps({
+        "success": True,
+        "items": items,
+        "price_range_used": f"₹{current_min:,} - ₹{current_max:,}",
+        "gender": gender,
+        "count": len(items)
     })
+
+
+# ─── ReAct Agent Setup ────────────────────────────────────────────────────────
+
+SYSTEM_PROMPT = """You are a luxury fashion stylist AI agent. Help users find the perfect clothing items.
+
+Your task:
+1. Analyze the user's query to understand what they need
+2. Extract or infer:
+   - The type of clothing item to search for (be specific: "formal black pants", not just "pants")
+   - Price range if mentioned (default: 0-10000 rupees)
+   - Gender: "men" or "women" (default: "men" if not specified)
+3. Use the search_fashion_items tool to find items (make sure you send min and max price as integers and gender as string)
+4. Evaluate the results based on fashion rules:
+   - Color coordination
+   - Style compatibility (formal/casual/occasion)
+   - Fashion principles
+5. Return a final JSON response with:
+   {{
+     "recommended_items": [
+       {{
+         "name": "item name",
+         "brand": "brand",
+         "price": "price",
+         "product_url": "url",
+         "image_url": "url",
+         "why_this_works": "brief elegant explanation"
+       }}
+     ],
+     "total_price": "calculated total",
+     "stylist_note": "A luxurious 2-3 sentence note explaining why these pieces work together"
+   }}
+
+Be elegant, concise, and authoritative in your styling advice."""
+
+
+def create_fashion_agent():
+    """Create the fashion agent with tool calling."""
+    llm = get_llm()
+    tools = [search_fashion_items]
+    checkpointer = InMemorySaver()
     
-    # Parse JSON response
-    try:
-        # Try to extract JSON from response
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group())
-        else:
-            result = json.loads(response)
-        
-        # Calculate total price
-        total = sum(extract_price_value(item.get('price')) for item in items)
-        result['total_price'] = f"₹ {total:,}"
-        
-        # Add full item details
-        for i, rec_item in enumerate(result.get('recommended_items', [])):
-            if i < len(items):
-                rec_item.update({
-                    "product_url": items[i]['product_url'],
-                    "image_url": items[i]['image_url'],
-                    "description": items[i]['description'],
-                    "category": items[i]['category'],
-                    "gender": items[i]['gender']
-                })
-        
-        return result
-        
-    except Exception as e:
-        print(f"⚠ JSON parsing failed: {e}")
-        # Fallback response
-        total = sum(extract_price_value(item.get('price')) for item in items)
-        return {
-            "recommended_items": [
-                {
-                    "name": item['name'],
-                    "brand": item['brand'],
-                    "price": item['price'],
-                    "product_url": item['product_url'],
-                    "image_url": item['image_url'],
-                    "why_this_works": "Carefully selected to match your style requirements."
-                }
-                for item in items
-            ],
-            "total_price": f"₹ {total:,}",
-            "stylist_note": "These pieces have been curated to create a cohesive and stylish ensemble."
-        }
+    agent = create_agent(
+        model=llm,
+        tools=tools,
+        system_prompt=SYSTEM_PROMPT,
+        checkpointer=checkpointer,
+    )
+    
+    return agent
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def main(user_query: str, min_price: int = 0, max_price: int = 10000):
+def main(user_query: str):
     """
-    Main function to get fashion recommendations.
+    Main function to get fashion recommendations using agent.
     
     Args:
-        user_query: User's fashion query
-        min_price: Minimum price filter (default: 0)
-        max_price: Maximum price filter (default: 10000)
+        user_query: User's fashion query (can include price preferences)
         
     Returns:
         JSON payload with justified recommendations
     """
     print("="*70)
-    print("  FASHION RECOMMENDER")
+    print("  FASHION RECOMMENDER - Agentic Flow")
     print("="*70)
+    print(f"\n💬 User Query: {user_query}\n")
     
-    # Step 1: Get items from vector search with price filtering
-    items = process_query(user_query, min_price, max_price)
+    # Create and run agent
+    agent = create_fashion_agent()
     
-    if not items:
-        print("\n❌ No items found")
+    try:
+        response = agent.invoke(
+            {"messages": [{"role": "user", "content": user_query}]},
+            config={"configurable": {"thread_id": "fashion-agent"}}
+        )
+        
+        final_answer = response["messages"][-1].content
+        
+        # Try to parse JSON from final answer
+        try:
+            json_match = re.search(r'\{.*\}', final_answer, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+            else:
+                result = json.loads(final_answer)
+            
+            # Ensure total_price is a string
+            if "total_price" in result:
+                if isinstance(result["total_price"], (int, float)):
+                    result["total_price"] = f"₹ {result['total_price']:,}"
+                elif not isinstance(result["total_price"], str):
+                    result["total_price"] = str(result["total_price"])
+            else:
+                result["total_price"] = "₹ 0"
+            
+            # Ensure stylist_note exists
+            if "stylist_note" not in result:
+                result["stylist_note"] = "These pieces have been carefully curated for your style."
+            
+            # Ensure recommended_items exists
+            if "recommended_items" not in result:
+                result["recommended_items"] = []
+            
+            # Display results
+            print("\n" + "="*70)
+            print("  STYLIST RECOMMENDATIONS")
+            print("="*70)
+            
+            print(f"\n💰 Total Price: {result.get('total_price', 'N/A')}")
+            print(f"\n✨ Stylist Note:\n{result.get('stylist_note', 'N/A')}")
+            
+            items = result.get('recommended_items', [])
+            print(f"\n📦 Recommended Items ({len(items)}):")
+            for i, item in enumerate(items, 1):
+                print(f"\n[{i}] {item.get('name', 'N/A')}")
+                print(f"    Brand: {item.get('brand', 'N/A')}")
+                print(f"    Price: {item.get('price', 'N/A')}")
+                print(f"    Why: {item.get('why_this_works', 'N/A')}")
+                if 'product_url' in item:
+                    print(f"    URL: {item.get('product_url', 'N/A')}")
+            
+            print("\n" + "="*70)
+            
+            return result
+            
+        except Exception as e:
+            print(f"\n⚠ Could not parse JSON: {e}")
+            print(f"\nRaw response:\n{final_answer}")
+            return {
+                "recommended_items": [],
+                "total_price": "₹ 0",
+                "stylist_note": "Failed to parse response. Please try again.",
+                "error": str(e),
+                "raw": final_answer
+            }
+    
+    except Exception as e:
+        print(f"\n❌ Agent error: {e}")
         return {
             "recommended_items": [],
             "total_price": "₹ 0",
-            "stylist_note": "No items found matching your criteria."
+            "stylist_note": "An error occurred. Please try again.",
+            "error": str(e)
         }
-    
-    # Step 2: Get stylist justification
-    result = justify_recommendations(user_query, items)
-    
-    # Step 3: Display results
-    print("\n" + "="*70)
-    print("  STYLIST RECOMMENDATIONS")
-    print("="*70)
-    
-    print(f"\n💰 Total Price: {result['total_price']}")
-    print(f"\n✨ Stylist Note:\n{result['stylist_note']}")
-    
-    print(f"\n📦 Recommended Items ({len(result['recommended_items'])}):")
-    for i, item in enumerate(result['recommended_items'], 1):
-        print(f"\n[{i}] {item['name']}")
-        print(f"    Brand: {item['brand']}")
-        print(f"    Price: {item['price']}")
-        print(f"    Why: {item.get('why_this_works', 'N/A')}")
-        if 'product_url' in item:
-            print(f"    URL: {item['product_url']}")
-    
-    print("\n" + "="*70)
-    
-    return result
 
 
 if __name__ == "__main__":
     # Example queries
-    query = "I want some blue comfy pants"
-    # query = "Show me black joggers"
     
-    # With default price range (0 - 10000)
-    main(query, 0, 500)
+    # Query with implicit price range
+    query = "I  have blue polo I wanna buy bottoms for it but i have only 1500 rs"
     
-    # With custom price range
-    # main(query, min_price=1000, max_price=2000)
+    # Query with explicit price range
+    # query = "Show me casual joggers under 2000 rupees"
+    
+    # Query with specific requirements
+    # query = "I need formal pants between 1500 and 3000 rupees that go well with a white shirt"
+    
+    main(query)
