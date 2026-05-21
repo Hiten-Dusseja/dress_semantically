@@ -1,0 +1,12 @@
+playwright
+langchain
+langchain-community
+langchain-core
+langchain-groq
+langchain-huggingface
+langchain-chroma
+langgraph
+chromadb
+sentence-transformers
+torch
+python-dotenv

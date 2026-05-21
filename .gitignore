@@ -1,3 +1,5 @@
 venv/
-scraper_output
-__pycache__
+scraper_output/
+__pycache__/
+chroma_db/
+.env
