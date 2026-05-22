@@ -14,6 +14,10 @@ from langchain.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 import json
 import re
+from logger_config import setup_logger
+
+# Setup logger
+logger = setup_logger(__name__, "recommender.log")
 
 # Load environment variables
 load_dotenv()
@@ -92,7 +96,7 @@ def search_fashion_items(search_term: str, min_price: int = 0, max_price: int = 
     Returns:
         JSON string with list of items found
     """
-    print(f"\n🔍 Tool called: search_term='{search_term}', price_range=₹{min_price:,}-₹{max_price:,}, gender='{gender}'")
+    logger.info(f"Tool called - search_term: '{search_term}', price: ₹{min_price:,}-₹{max_price:,}, gender: '{gender}'")
     
     vectorstore = get_vectorstore()
     
@@ -109,7 +113,7 @@ def search_fashion_items(search_term: str, min_price: int = 0, max_price: int = 
     results = []
     
     while attempts < max_attempts:
-        print(f"  Attempt {attempts + 1}: Searching ₹{current_min:,} - ₹{current_max:,}, gender={gender}")
+        logger.info(f"Attempt {attempts + 1}: Searching ₹{current_min:,} - ₹{current_max:,}, gender={gender}")
         
         # Get more results to filter by price and gender
         all_results = vectorstore.similarity_search(search_term, k=30)
@@ -127,18 +131,18 @@ def search_fashion_items(search_term: str, min_price: int = 0, max_price: int = 
         
         if len(filtered_results) >= 5:
             results = filtered_results[:5]
-            print(f"  ✓ Found {len(results)} items")
+            logger.info(f"Found {len(results)} items")
             break
         elif len(filtered_results) > 0:
             results = filtered_results
-            print(f"  ✓ Found {len(results)} items (less than 5)")
+            logger.info(f"Found {len(results)} items (less than 5)")
             break
         
         # Expand range by 500 on both sides
         current_min = max(0, current_min - 500)
         current_max = current_max + 500
         attempts += 1
-        print(f"  ⚠ Found {len(filtered_results)} items, expanding range...")
+        logger.warning(f"Found {len(filtered_results)} items, expanding range...")
     
     if not results:
         return json.dumps({
@@ -234,10 +238,10 @@ def main(user_query: str):
     Returns:
         JSON payload with justified recommendations
     """
-    print("="*70)
-    print("  FASHION RECOMMENDER - Agentic Flow")
-    print("="*70)
-    print(f"\n💬 User Query: {user_query}\n")
+    logger.info("="*70)
+    logger.info("FASHION RECOMMENDER - Agentic Flow")
+    logger.info("="*70)
+    logger.info(f"User Query: {user_query}")
     
     # Create and run agent
     agent = create_fashion_agent()
@@ -276,30 +280,24 @@ def main(user_query: str):
                 result["recommended_items"] = []
             
             # Display results
-            print("\n" + "="*70)
-            print("  STYLIST RECOMMENDATIONS")
-            print("="*70)
-            
-            print(f"\n💰 Total Price: {result.get('total_price', 'N/A')}")
-            print(f"\n✨ Stylist Note:\n{result.get('stylist_note', 'N/A')}")
+            logger.info("="*70)
+            logger.info("STYLIST RECOMMENDATIONS")
+            logger.info("="*70)
+            logger.info(f"Total Price: {result.get('total_price', 'N/A')}")
+            logger.info(f"Stylist Note: {result.get('stylist_note', 'N/A')}")
             
             items = result.get('recommended_items', [])
-            print(f"\n📦 Recommended Items ({len(items)}):")
+            logger.info(f"Recommended Items: {len(items)}")
             for i, item in enumerate(items, 1):
-                print(f"\n[{i}] {item.get('name', 'N/A')}")
-                print(f"    Brand: {item.get('brand', 'N/A')}")
-                print(f"    Price: {item.get('price', 'N/A')}")
-                print(f"    Why: {item.get('why_this_works', 'N/A')}")
-                if 'product_url' in item:
-                    print(f"    URL: {item.get('product_url', 'N/A')}")
+                logger.info(f"[{i}] {item.get('name', 'N/A')} - {item.get('brand', 'N/A')} - {item.get('price', 'N/A')}")
             
-            print("\n" + "="*70)
+            logger.info("="*70)
             
             return result
             
         except Exception as e:
-            print(f"\n⚠ Could not parse JSON: {e}")
-            print(f"\nRaw response:\n{final_answer}")
+            logger.error(f"Could not parse JSON: {e}")
+            logger.debug(f"Raw response: {final_answer}")
             return {
                 "recommended_items": [],
                 "total_price": "₹ 0",
@@ -309,7 +307,7 @@ def main(user_query: str):
             }
     
     except Exception as e:
-        print(f"\n❌ Agent error: {e}")
+        logger.error(f"Agent error: {e}")
         return {
             "recommended_items": [],
             "total_price": "₹ 0",

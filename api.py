@@ -10,6 +10,10 @@ import uvicorn
 
 from cache_check import check_cache, save_to_cache, get_cache_stats, clear_cache
 from recommender import main as get_recommendations
+from logger_config import setup_logger
+
+# Setup logger
+logger = setup_logger(__name__, "api.log")
 
 # ─── FastAPI App ──────────────────────────────────────────────────────────────
 
@@ -96,10 +100,11 @@ def recommend(request: RecommendationRequest):
             if cached_response:
                 cache_hit = True
                 cached_response["cache_hit"] = True
+                logger.info(f"Cache hit for query: '{request.query}'")
                 return cached_response
         
         # Cache miss - get fresh recommendations
-        print(f"\n🎯 Getting fresh recommendations for: '{request.query}'")
+        logger.info(f"Getting fresh recommendations for: '{request.query}'")
         result = get_recommendations(request.query)
         
         # Add cache_hit flag
@@ -112,6 +117,7 @@ def recommend(request: RecommendationRequest):
         return result
         
     except Exception as e:
+        logger.error(f"Error in recommend endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -189,13 +195,13 @@ def health():
 # ─── Run Server ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("="*70)
-    print("  FASHION RECOMMENDER API")
-    print("="*70)
-    print("\n🚀 Starting server...")
-    print("📖 API Docs: http://localhost:8000/docs")
-    print("🔍 Health: http://localhost:8000/health")
-    print("\n" + "="*70 + "\n")
+    logger.info("="*70)
+    logger.info("FASHION RECOMMENDER API")
+    logger.info("="*70)
+    logger.info("Starting server...")
+    logger.info("API Docs: http://localhost:8000/docs")
+    logger.info("Health: http://localhost:8000/health")
+    logger.info("="*70)
     
     uvicorn.run(
         app,

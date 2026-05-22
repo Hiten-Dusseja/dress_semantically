@@ -8,6 +8,10 @@ import json
 from typing import Optional, Dict, Any
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
+from logger_config import setup_logger
+
+# Setup logger
+logger = setup_logger(__name__, "cache.log")
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 CACHE_DB_DIR = "cache_db"
@@ -61,7 +65,7 @@ def check_cache(user_query: str) -> Optional[Dict[str, Any]]:
     Returns:
         Cached response if found, None otherwise
     """
-    print(f"\n🔍 Checking cache for: '{user_query}'")
+    logger.info(f"Checking cache for query: '{user_query}'")
     
     vectorstore = get_cache_vectorstore()
     
@@ -69,22 +73,21 @@ def check_cache(user_query: str) -> Optional[Dict[str, Any]]:
     results = vectorstore.similarity_search_with_score(user_query, k=1)
     
     if not results:
-        print("  ❌ Cache miss - no similar queries found")
+        logger.info("Cache miss - no similar queries found")
         return None
     
     doc, score = results[0]
     similarity = 1 - score  # Convert distance to similarity
     
-    print(f"  📊 Most similar query: '{doc.page_content}'")
-    print(f"  📊 Similarity score: {similarity:.3f} (threshold: {SIMILARITY_THRESHOLD})")
+    logger.info(f"Most similar query: '{doc.page_content}' (similarity: {similarity:.3f})")
     
     if similarity >= SIMILARITY_THRESHOLD:
-        print("  ✅ Cache hit!")
+        logger.info("Cache hit!")
         # Return cached response from metadata
         cached_response = json.loads(doc.metadata.get('response', '{}'))
         return cached_response
     else:
-        print("  ❌ Cache miss - similarity below threshold")
+        logger.info(f"Cache miss - similarity {similarity:.3f} below threshold {SIMILARITY_THRESHOLD}")
         return None
 
 
@@ -96,7 +99,7 @@ def save_to_cache(user_query: str, response: Dict[str, Any]) -> None:
         user_query: User's fashion query
         response: The recommendation response to cache
     """
-    print(f"\n💾 Saving to cache: '{user_query}'")
+    logger.info(f"Saving to cache: '{user_query}'")
     
     vectorstore = get_cache_vectorstore()
     
@@ -109,7 +112,7 @@ def save_to_cache(user_query: str, response: Dict[str, Any]) -> None:
         }]
     )
     
-    print("  ✅ Saved to cache")
+    logger.info("Successfully saved to cache")
 
 
 def clear_cache() -> None:
@@ -121,9 +124,9 @@ def clear_cache() -> None:
         try:
             # Try to delete the collection
             _cache_vectorstore._client.delete_collection(CACHE_COLLECTION_NAME)
-            print("✅ Collection deleted")
+            logger.info("Collection deleted")
         except Exception as e:
-            print(f"⚠ Could not delete collection: {e}")
+            logger.warning(f"Could not delete collection: {e}")
         
         # Reset the global variable
         _cache_vectorstore = None
@@ -142,20 +145,20 @@ def clear_cache() -> None:
             for attempt in range(max_retries):
                 try:
                     shutil.rmtree(CACHE_DB_DIR)
-                    print("✅ Cache directory cleared")
+                    logger.info("Cache directory cleared")
                     break
                 except PermissionError as e:
                     if attempt < max_retries - 1:
-                        print(f"  Retry {attempt + 1}/{max_retries}...")
+                        logger.warning(f"Retry {attempt + 1}/{max_retries}...")
                         time.sleep(1)
                     else:
-                        print(f"⚠ Could not delete cache directory: {e}")
-                        print("  Cache collection was deleted but directory remains locked")
-                        print("  It will be cleared on next restart")
+                        logger.warning(f"Could not delete cache directory: {e}")
+                        logger.info("Cache collection was deleted but directory remains locked")
+                        logger.info("It will be cleared on next restart")
         except Exception as e:
-            print(f"⚠ Error clearing cache: {e}")
+            logger.error(f"Error clearing cache: {e}")
     else:
-        print("⚠ Cache directory does not exist")
+        logger.info("Cache directory does not exist")
 
 
 def get_cache_stats() -> Dict[str, Any]:
